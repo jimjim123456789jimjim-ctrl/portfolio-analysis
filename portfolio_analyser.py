@@ -9,7 +9,7 @@ Portfolio Analyser — Powered by Google Gemini (FREE)
 
 SETUP
 -----
-1.  pip install yfinance requests google-generativeai
+1.  pip install yfinance requests google-genai
 2.  Set environment variables in PowerShell:
       $env:GEMINI_API_KEY    = "AIzaSy..."
       $env:GMAIL_USER        = "you@gmail.com"
@@ -34,7 +34,7 @@ logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 logging.getLogger("urllib3").setLevel(logging.CRITICAL)
 
 import requests
-import google.generativeai as genai
+import google.genai as genai
 
 from email_login import (
     GEMINI_API_KEY,
@@ -332,13 +332,19 @@ WATCHLIST - ETFs
 
 
 def analyse_with_gemini(stock_data, mf_data, wl_stocks, wl_mf, wl_etf) -> str:
-    genai.configure(api_key=GEMINI_API_KEY)
-    model  = genai.GenerativeModel(GEMINI_MODEL)
     prompt = build_prompt(stock_data, mf_data, wl_stocks, wl_mf, wl_etf)
+    client = genai.Client(api_key=GEMINI_API_KEY)
 
     print(f"\n[4/5] Sending to Gemini for analysis using {GEMINI_MODEL} (please wait ~20s)...")
-    response = model.generate_content(prompt)
-    raw = response.text
+    try:
+        response = client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=prompt,
+        )
+        raw = response.text or ""
+    finally:
+        client.close()
+
     print("\n─── Gemini response ───")
     print(raw)
     print("───────────────────────")
@@ -349,7 +355,15 @@ def analyse_with_gemini(stock_data, mf_data, wl_stocks, wl_mf, wl_etf) -> str:
 #  PARSE GEMINI RESPONSE
 # ══════════════════════════════════════════════════════════════
 
-def parse_response(raw: str) -> dict:
+def extract_current_price(summary: str) -> str:
+    for label in ("Current price:", "Current NAV:"):
+        if label in summary:
+            price_line = summary.split(label, 1)[1].splitlines()[0].strip()
+            return price_line
+    return ""
+
+
+def parse_response(raw: str, stock_data: dict, mf_data: dict, wl_stocks: dict, wl_mf: dict, wl_etf: dict) -> dict:
     sections = {
         "port_stocks": [],
         "port_mf":     [],
@@ -358,6 +372,10 @@ def parse_response(raw: str) -> dict:
         "wl_etf":      [],
         "outlook":     "",
     }
+    price_map = {}
+    for data in (stock_data, mf_data, wl_stocks, wl_mf, wl_etf):
+        for key, summary in data.items():
+            price_map[key] = extract_current_price(summary)
     MARKERS = {
         "## portfolio stocks":        "port_stocks",
         "## portfolio mutual funds":  "port_mf",
@@ -386,10 +404,11 @@ def parse_response(raw: str) -> dict:
             parts = [p.strip() for p in s.split("|")]
             if len(parts) >= 3:
                 name   = parts[0]
-                signal = parts[1].upper().replace("*","").strip()
-                reason = " ".join(parts[2:]).replace("*","").strip()
+                signal = parts[1].upper().replace("*", "").strip()
+                reason = " ".join(parts[2:]).replace("*", "").strip()
                 if signal in ("BUY", "HOLD", "SELL"):
-                    sections[current].append((name, signal, reason))
+                    price = price_map.get(name, "")
+                    sections[current].append((name, signal, price, reason))
     return sections
 
 
@@ -410,17 +429,26 @@ def make_table(rows, col1="Symbol"):
         f"<thead><tr style='background:#e8eaf6;color:#1a237e;"
         f"font-size:12px;text-transform:uppercase;'>"
         f"<th style='padding:9px 12px;text-align:left;'>{col1}</th>"
+        f"<th style='padding:9px 12px;text-align:left;'>Current Price</th>"
         f"<th style='padding:9px 12px;text-align:left;'>Signal</th>"
         f"<th style='padding:9px 12px;text-align:left;'>Reason</th>"
         f"</tr></thead>"
     )
     tbody = ""
-    for name, signal, reason in rows:
+    for row in rows:
+        if len(row) == 4:
+            name, signal, price, reason = row
+        else:
+            name, signal, reason = row
+            price = ""
+        display_price = price or "—"
         css, label = SIGNAL_CSS.get(signal, ("", signal))
         tbody += (
             f"<tr>"
             f"<td style='padding:9px 12px;font-weight:600;font-size:14px;"
             f"border-bottom:1px solid #f0f0f0;'>{name}</td>"
+            f"<td style='padding:9px 12px;border-bottom:1px solid #f0f0f0;color:#444;"
+            f"font-size:13px;'>{display_price}</td>"
             f"<td style='padding:9px 12px;border-bottom:1px solid #f0f0f0;'>"
             f"<span style='padding:3px 10px;border-radius:4px;font-weight:700;"
             f"font-size:12px;{css}'>{label}</span></td>"
@@ -448,9 +476,9 @@ def build_html(sections: dict) -> str:
     today_str = datetime.date.today().strftime("%d %B %Y")
 
     all_rows = sections["port_stocks"] + sections["port_mf"]
-    buys  = sum(1 for _, s, _ in all_rows if s == "BUY")
-    holds = sum(1 for _, s, _ in all_rows if s == "HOLD")
-    sells = sum(1 for _, s, _ in all_rows if s == "SELL")
+    buys  = sum(1 for _, s, *_ in all_rows if s == "BUY")
+    holds = sum(1 for _, s, *_ in all_rows if s == "HOLD")
+    sells = sum(1 for _, s, *_ in all_rows if s == "SELL")
 
     summary_bar = (
         "<div style='display:flex;gap:12px;margin:0 0 24px;'>"
@@ -572,8 +600,16 @@ def send_telegram(sections: dict):
         if not rows:
             return lines
         lines.append(title)
-        for name, sig, reason in rows[:limit]:
-            lines.append(f"{emo.get(sig,'')} {shorten_text(name, 30)} {sig} - {shorten_text(reason, 80)}")
+        for row in rows[:limit]:
+            if len(row) == 4:
+                name, sig, price, reason = row
+            else:
+                name, sig, reason = row
+                price = ""
+            price_text = f" {price}" if price else ""
+            lines.append(
+                f"{emo.get(sig,'')} {shorten_text(name, 30)}{price_text} {sig} - {shorten_text(reason, 80)}"
+            )
         if len(rows) > limit:
             lines.append(f"...and {len(rows) - limit} more")
         return lines
@@ -587,8 +623,14 @@ def send_telegram(sections: dict):
     if watchlist:
         lines.append("")
         lines.append("Top BUY Picks:")
-        for name, sig, reason in watchlist[:8]:
-            lines.append(f"🟢 {shorten_text(name, 30)} - {shorten_text(reason, 80)}")
+        for row in watchlist[:8]:
+            if len(row) == 4:
+                name, sig, price, reason = row
+            else:
+                name, sig, reason = row
+                price = ""
+            price_text = f" {price}" if price else ""
+            lines.append(f"🟢 {shorten_text(name, 30)}{price_text} - {shorten_text(reason, 80)}")
         if len(watchlist) > 8:
             lines.append(f"...and {len(watchlist) - 8} more")
 
@@ -624,7 +666,7 @@ def main():
 
     stock_data, mf_data, wl_stocks, wl_mf, wl_etf = fetch_all_data()
     raw      = analyse_with_gemini(stock_data, mf_data, wl_stocks, wl_mf, wl_etf)
-    sections = parse_response(raw)
+    sections = parse_response(raw, stock_data, mf_data, wl_stocks, wl_mf, wl_etf)
 
     print("\n[5/5] Sending report...")
     html = build_html(sections)
