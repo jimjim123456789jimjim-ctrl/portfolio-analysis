@@ -68,6 +68,7 @@ MY_STOCKS = {
     "ADAGRE":  ("ADANIGREEN.NS", "Adani Green Energy"),
     "ADAPORT": ("ADANIPORTS.NS", "Adani Ports & SEZ"),
     "ADANENT": ("ADANIENT.NS",   "Adani Enterprises"),
+    "ADANENS": ("ADANIENSOL.NS", "Adani Energy Solutions"),
     "ADAWIL":  ("ADANIWIL.NS",   "Adani Wilmar"),
     "AMBUJA":  ("AMBUJACEM.NS",  "Ambuja Cements"),
     "ADATG":   ("ATGL.NS",       "Adani Total Gas"),
