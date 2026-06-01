@@ -581,13 +581,15 @@ def send_email(html_body: str):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"📊 Portfolio Report — {today_str}"
     msg["From"]    = GMAIL_USER
-    msg["To"]      = NOTIFY_EMAIL
+    # Support multiple recipients separated by commas in NOTIFY_EMAIL
+    recipients = [e.strip() for e in (NOTIFY_EMAIL or "").split(",") if e.strip()]
+    msg["To"] = ", ".join(recipients) if recipients else ""
     msg.attach(MIMEText(html_body, "html"))
     try:
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as s:
             s.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-            s.sendmail(GMAIL_USER, NOTIFY_EMAIL, msg.as_string())
-        print(f"  ✅ Email sent → {NOTIFY_EMAIL}")
+            s.sendmail(GMAIL_USER, recipients or [NOTIFY_EMAIL], msg.as_string())
+        print(f"  ✅ Email sent → {', '.join(recipients) if recipients else NOTIFY_EMAIL}")
     except Exception as e:
         print(f"  ❌ Email failed: {e}")
         print("     Check GMAIL_USER and GMAIL_APP_PASSWORD are correct.")
